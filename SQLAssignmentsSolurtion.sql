@@ -25,7 +25,7 @@ SELECT p.FirstName
 	, p.LastName 
 FROM Person.Person AS p  
 INNER JOIN HumanResources.Employee AS e  
-    ON p.BusinessEntityID = e.BusinessEntityID  
+ON p.BusinessEntityID = e.BusinessEntityID  
 WHERE e.JobTitle IN ('Design Engineer', 'Tool Designer', 'Marketing Assistant');
 
 --4
@@ -46,9 +46,9 @@ WHERE weight = @MaxWeight;
 Some of the MaxQty values are NULL, in this case display 
 the value 0.00 instead. (Schema(s) involved: Sales)
 */
-SELECT COALESCE(CAST(MaxQty AS VARCHAR),'0.00')
+SELECT COALESCE(CAST(MaxQty AS VARCHAR),'0.00') AS 'Weight'
 	, Description
-	FROM Sales.SpecialOffer
+FROM Sales.SpecialOffer
 
 --6
 /*	Display the overall Average of the [CurrencyRate].[AverageRate] 
@@ -139,10 +139,12 @@ AdventureWorks customers who have not placed an order.
 -- Using JOIN
 SELECT c.CustomerID 
 FROM Sales.Customer AS c
-EXCEPT
+WHERE c.CustomerID NOT IN(
 SELECT c.CustomerID
 FROM Sales.Customer AS c
-INNER JOIN Sales.SalesOrderHeader AS soh ON c.CustomerID = soh.CustomerID; 
+INNER JOIN Sales.SalesOrderHeader AS soh 
+ON c.CustomerID = soh.CustomerID);
+
 
 -- Using Subquery
 SELECT CustomerID
@@ -154,7 +156,7 @@ WHERE CustomerID NOT IN
 	); 
 
 -- Using CTE
-With CustomersWithOrders (CustomerID)
+WITH CustomersWithOrders (CustomerID)
 AS
 	(
 	SELECT CustomerID 
@@ -180,19 +182,14 @@ WHERE NOT EXISTS
 /*	Show the most recent five orders that were purchased from account 
 numbers that have spent more than $70,000 with AdventureWorks.
 */
-WITH AccountOver70k (AccountNumber)
-AS
-(
-	SELECT AccountNumber
-	FROM Sales.SalesOrderHeader 
-	GROUP BY AccountNumber
-)
-
 SELECT TOP 5 SalesOrderID
 		   , AccountNumber
 		   , OrderDate
+		   , TotalDue
 FROM Sales.SalesOrderHeader
-WHERE AccountNumber IN (SELECT * FROM AccountOver70k)
+WHERE AccountNumber IN (SELECT AccountNumber
+	FROM Sales.SalesOrderHeader 
+	WHERE TotalDue>70000)
 ORDER BY OrderDate DESC;
 GO
 
@@ -204,8 +201,8 @@ UnitPrice, and the unit price converted to the target currency based on
 the end of day rate for the date provided. 
 Exchange rates can be found in the Sales.CurrencyRate table. (Use AdventureWorks)
 */
-CREATE FUNCTION dbo.uf_OrderDetails(@SalesOrderID int, @CurrencyCode nchar(3), @Date datetime)
-RETURNS @Result TABLE (QrderQty int,ProductID int, UnitPrice money,TargetCurrencyPrice money)
+CREATE FUNCTION dbo.ufOrderDetails(@SalesOrderID int, @CurrencyCode nchar(3), @Date datetime)
+RETURNS @Result TABLE (SalesOrderID int, QrderQty int,ProductID int, UnitPrice money,TargetCurrencyPrice money)
 AS
 BEGIN
 	DECLARE @ConversionRate money = 
@@ -217,7 +214,8 @@ BEGIN
 	)
 
 	INSERT INTO @Result
-	SELECT OrderQty
+	SELECT SalesOrderID
+		, OrderQty
 		 , ProductID
 		 , UnitPrice
 		 , UnitPrice * @ConversionRate AS 'TargetCurrencyPrice'
@@ -228,10 +226,10 @@ END;
 GO
 
 -- For Testing Function
-DECLARE @SalesOrderID int = 43659;
-DECLARE @CurrencyCode nchar(3) = 'CAD'
+DECLARE @SalesOrderID int = 54199;
+DECLARE @CurrencyCode nchar(3) = 'AUD'
 DECLARE @Date datetime = '2005-07-01 00:00:00.000';
-SELECT * FROM uf_OrderDetails(@SalesOrderID, @CurrencyCode, @Date);
+SELECT * FROM ufOrderDetails(@SalesOrderID, @CurrencyCode, @Date);
 GO
 
 --Exercise-5
@@ -240,7 +238,7 @@ Person.Person table and accepting a filter for the first name.
 Alter the above Store Procedure to supply Default Values if user 
 does not enter any value.( Use AdventureWorks)
 */
-CREATE PROCEDURE up_filterByFirstName
+CREATE PROCEDURE upfilterByFirstName
 	@FirstName varchar(50)
 AS
 SELECT FirstName
@@ -248,11 +246,11 @@ FROM Person.Person
 WHERE FirstName LIKE '%' + @FirstName + '%';
 GO
 --For Test Filter by Name
-EXEC up_filterByFirstName @FirstName = 'ss'
+EXEC upfilterByFirstName @FirstName = 'ss'
 GO
 
 --Alter Method
-ALTER PROCEDURE up_filterByFirstName
+ALTER PROCEDURE upfilterByFirstName
 	@FirstName varchar(50) = ''
 AS
 SELECT FirstName
@@ -260,7 +258,7 @@ FROM Person.Person
 WHERE FirstName LIKE '%' + @FirstName + '%';
 GO
 --For Test Alter method
-EXEC up_filterByFirstName
+EXEC upfilterByFirstName
 GO
 
 
@@ -268,42 +266,60 @@ GO
 /*	Write a trigger for the Product table to ensure the list price 
 can never be raised more than 15 Percent in a single change. 
 Modify the above trigger to execute its check code only if the 
-ListPrice column is   updated (Use AdventureWorks Database).
+ListPrice column is updated (Use AdventureWorks Database).
 */
-CREATE TRIGGER Production.I_U_Product_limitIncrementOfPriceBy15 
-ON Production.Product
-AFTER UPDATE
+
+CREATE TRIGGER [Production].[PriceChangesLimit]
+ON [Production].[Product]
+FOR UPDATE
 AS
-BEGIN
-	SET NOCOUNT ON;
-
-	DECLARE @LimitExceededRowCount int =
-	(
-		SELECT COUNT(*)
-		FROM inserted AS i
-		INNER JOIN deleted As d ON i.ProductID = d.ProductID
-		WHERE i.ListPrice > d.ListPrice * 1.15
-	);
-
-	IF @LimitExceededRowCount > 0
-	BEGIN
-		RAISERROR('Query RolledBack Because List Price Increased More Than 15 Percent In Single Query',16,1);
-		ROLLBACK;
-	END
-
-END;
+    IF EXISTS
+        (
+        SELECT *
+        FROM inserted i
+        JOIN deleted d
+            ON i.ProductID = d.ProductID
+        WHERE i.ListPrice > (d.ListPrice * 1.15)
+        )
+    BEGIN
+        RAISERROR('Price increase may not be greater than 15 percent.Transaction Failed.',16,1)
+        ROLLBACK TRAN       
+    END
 GO
 
 -- Check Value
 SELECT ListPrice FROM Production.Product Order By ListPrice DESC;
-
+GO
 --Trigger Test 1
 UPDATE Production.Product
 SET ListPrice = ListPrice * 1.10
-
+GO
 --Trigger Test 2
 UPDATE Production.Product
 SET ListPrice = ListPrice * 1.50
+GO
 
-
-
+--UPDATED TRIGGER
+ALTER TRIGGER [Production].[PriceChangesLimit]
+ON [Production].[Product]
+FOR UPDATE
+AS
+    IF UPDATE(ListPrice)
+    BEGIN
+        IF EXISTS
+            (
+            SELECT *
+            FROM inserted i
+            JOIN deleted d
+                ON i.ProductID = d.ProductID
+            WHERE i.ListPrice > (d.ListPrice * 1.15)
+            )
+        BEGIN
+            RAISERROR('List Price cannot be raised more than 15 % ',16,1)
+            ROLLBACK TRAN
+        END
+		ELSE
+		BEGIN
+			PRINT 'SUCCESS'
+		END
+END
